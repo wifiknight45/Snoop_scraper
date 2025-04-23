@@ -1,0 +1,143 @@
+import requests
+import aiohttp
+import asyncio
+import re
+import json
+import csv
+import sqlite3
+import logging
+import time
+import random
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+from stem.control import Controller
+import nltk
+from nltk.sentiment import SentimentIntensityAnalyzer
+from selenium import webdriver
+from PIL import Image
+import pytesseract
+
+# Setup logging
+logging.basicConfig(filename="scraper.log", level=logging.ERROR)
+
+# Security & Privacy
+TOR_PROXY = "socks5://127.0.0.1:9050"
+PROXIES = {"http": TOR_PROXY, "https": TOR_PROXY}
+USER_AGENT = UserAgent()
+TIMEOUT = 10
+SAVE_FILE = "osint_results.json"
+
+# Database Setup
+conn = sqlite3.connect("osint_data.db")
+c = conn.cursor()
+c.execute("CREATE TABLE IF NOT EXISTS scraped_data (id INTEGER PRIMARY KEY, content TEXT)")
+conn.commit()
+
+# Sentiment Analysis Setup
+nltk.download("vader_lexicon")
+sentiment_analyzer = SentimentIntensityAnalyzer()
+
+async def fetch_page(url, session):
+    """Fetch the HTML content asynchronously."""
+    headers = {"User-Agent": USER_AGENT.random}
+    try:
+        async with session.get(url, headers=headers, proxies=PROXIES, timeout=TIMEOUT) as response:
+            return await response.text()
+    except Exception as e:
+        logging.error(f"Error fetching {url}: {e}")
+        return None
+
+async def scrape_data(url):
+    """Extract relevant data asynchronously."""
+    async with aiohttp.ClientSession() as session:
+        html = await fetch_page(url, session)
+        if not html:
+            return
+
+        soup = BeautifulSoup(html, "html.parser")
+        data = []
+
+        # Extract emails
+        emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", html)
+        data.extend(emails)
+
+        # Extract text content
+        for item in soup.find_all(["p", "h1", "h2", "h3"]):
+            text = item.get_text(strip=True)
+            sentiment_score = sentiment_analyzer.polarity_scores(text)["compound"]
+            data.append({"text": text, "sentiment": sentiment_score})
+
+        # Store in database
+        for item in data:
+            c.execute("INSERT INTO scraped_data (content) VALUES (?)", (str(item),))
+        conn.commit()
+
+        return data
+
+def scrape_images(url):
+    """Scrape images and attempt reverse lookup."""
+    driver = webdriver.Chrome()
+    driver.get(url)
+    time.sleep(3)
+
+    images = driver.find_elements_by_tag_name("img")
+    for img in images[:5]:  # Limit image downloads
+        src = img.get_attribute("src")
+        response = requests.get(src, headers={"User-Agent": USER_AGENT.random})
+        if response.status_code == 200:
+            with open(f"images/{random.randint(1,1000)}.jpg", "wb") as file:
+                file.write(response.content)
+    driver.quit()
+
+def detect_captcha(image_path):
+    """Attempt captcha detection."""
+    image = Image.open(image_path)
+    text = pytesseract.image_to_string(image)
+    return text
+
+def check_ip_blacklist(ip_address):
+    """Check if IP is blacklisted."""
+    blacklist_check_url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip_address}"
+    response = requests.get(blacklist_check_url, headers={"Key": "Your_API_Key"})
+    if response.status_code == 200:
+        data = response.json()
+        return data["data"]["isPublic"]
+    return False
+
+def generate_report(scraped_data):
+    """Create a structured OSINT report."""
+    report = {
+        "total_entries": len(scraped_data),
+        "entries": scraped_data
+    }
+    with open("osint_report.json", "w") as file:
+        json.dump(report, file, indent=4)
+
+def export_to_csv(scraped_data):
+    """Export results to CSV format."""
+    with open("osint_data.csv", "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Content"])
+        for entry in scraped_data:
+            writer.writerow([entry])
+
+async def main():
+    """Main function."""
+    urls = ["https://example.com", "https://target-site.com"]  # Replace with actual target sites
+    scraped_data = []
+
+    for url in urls:
+        data = await scrape_data(url)
+        if data:
+            scraped_data.extend(data)
+            scrape_images(url)  # Extract images
+
+        # Adaptive request rate handling
+        time.sleep(random.uniform(1, 5))
+
+    generate_report(scraped_data)
+    export_to_csv(scraped_data)
+    print("OSINT scraping completed!")
+
+if __name__ == "__main__":
+    asyncio.run(main())
