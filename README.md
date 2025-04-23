@@ -1,0 +1,2 @@
+# Snoop_scraper
+This Python script is an asynchronous web scraper that utilizes OSINT techniques to extract emails and text content from specified URLs, performs sentiment analysis on the text, scrapes images, checks for IP blacklisting, and generates structured reports in JSON and CSV formats, all while ensuring privacy through the use of the Tor network.
